@@ -63,36 +63,67 @@ class VideoGenerationPipeline(FlowSpec):
         type    = int, 
         help    ='Maximum Number of frames ')
 
-    @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.3')
+    # @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.3')
     @step
     def start(self):
         print(type(self.audiofile))
-        from utils import init_textfile
-        
+        from utils import init_textfile        
         text_file_path = self._to_file(self.textfile.encode())
-        print("Found Text file")
         self.descs = init_textfile(text_file_path)
         self.next(self.train)
     
-    def _to_file(self,file_bytes):
+    def _to_file(self,file_bytes,as_name=True):
+        """
+        Returns path for a file. 
+        """
         import tempfile
         latent_temp = tempfile.NamedTemporaryFile(delete=False)
         latent_temp.write(file_bytes)
         latent_temp.seek(0)
-        print("Written to file :",latent_temp)
+        if not as_name:
+            return latent_temp
         return latent_temp.name
         
 
-    @batch(cpu=4,memory=8000,gpu=1,image='valayob/musicvideobuilder:0.4')
+    @batch(cpu=4,memory=24000,gpu=1,image='valayob/musicvideobuilder:0.4')
     @step
     def train(self):
+        """
+        Setup and Train the Model. Store rest in S3. 
+        """
         print("Setting Up Model : ",self.generator)
         model,perceptor = self.setup_models()
-        templist, descs, model = self.train_video_gen(model,perceptor)
+        templist, model = self.train_video_gen(model,perceptor)
+        from metaflow import S3
+        with S3(run=self) as s3:
+            s3_resp = s3.put_files([
+                (f.name.split('/')[-1],f.name) for f in templist
+            ])
+            self.latent_vector_files = [r[1] for r in s3_resp]
+
+        self.model = model.cpu().state_dict() 
+        self.perceptor = perceptor.cpu().state_dict()
+        self.next(self.inference)
+    
+    @batch(cpu=4,memory=24000,gpu=1,image='valayob/musicvideobuilder:0.4')
+    @step
+    def inference(self):
+        """
+        Run Inference on the latent vectors stored. 
+        """
+        from metaflow import S3
         print("Training Complete : Creating Video file")
-        audio_file_path = self._to_file(self.audiofile)
-        path_to_video = self.interpolate(templist, descs, model, audio_file_path)
-        self.video_url = self.save_video(path_to_video)
+        with S3() as s3:
+            templist =  []
+            for ret_obj in s3.get_many(self.latent_vector_files):
+                templist.append(self._to_file(ret_obj.blob,as_name=True) )
+            model,_ = self.setup_models()
+            if self.num_gpus > 0 :
+                model = model.cuda()
+            model.load_state_dict(self.model)
+            audio_file_path = self._to_file(self.audiofile)
+            path_to_video = self.interpolate(templist, self.descs, model, audio_file_path)
+            self.video_url = self.save_video(path_to_video)
         self.next(self.end)
     
     
@@ -236,7 +267,7 @@ class VideoGenerationPipeline(FlowSpec):
                 latent_temp.seek(0)
                 #append it to templist so it can be accessed later
                 templist.append(latent_temp)
-        return templist, self.descs, model 
+        return templist, model 
     
     def setup_models(self):
         import clip 
