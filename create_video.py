@@ -28,17 +28,22 @@ def createvid(description, image_temp_list, fps=24, duration=0.1):
     comp_list = [blackbg, concat_clip, txt_mov]
     final = me.CompositeVideoClip(comp_list).set_duration(concat_clip.duration)
 
-    with tempfile.NamedTemporaryFile() as video_tempfile:
-        final.write_videofile(video_tempfile.name+".mp4", fps=fps)
-        video_tempfile.seek(0)
+    video_tempfile = tempfile.NamedTemporaryFile(delete=False)
+    final.write_videofile(video_tempfile.name+".mp4", fps=fps)
+    video_tempfile.seek(0)
 
-        for clip in clips:
-            clip.close()
-        for clip in comp_list:
-            clip.close()
-        return video_tempfile
+    for clip in clips:
+        clip.close()
+    for clip in comp_list:
+        clip.close()
+    return video_tempfile
 
-def concatvids(descriptions, video_temp_list, audiofilepath, fps=24, lyrics=True):
+def concatvids(descriptions, \
+            video_temp_list, \
+            audiofilepath, \
+            fps=24, \
+            lyrics=True,\
+            write_to_path=None):
     clips = []
 
     for idx, (desc, vid) in enumerate(zip(descriptions, video_temp_list)):
@@ -81,7 +86,14 @@ def concatvids(descriptions, video_temp_list, audiofilepath, fps=24, lyrics=True
         concat_clip.audio = me.AudioFileClip(audiofilepath)
 
         concat_clip.duration = concat_clip.audio.duration
-    concat_clip.write_videofile(os.path.join('output', f"finaloutput.mp4"), fps=fps)
+    write_path = None
+    if write_to_path is None:
+        write_path = os.path.join('output', f"finaloutput.mp4")
+    else:
+        write_path = os.path.join(write_to_path, f"finaloutput.mp4") 
+    concat_clip.write_videofile(write_path, fps=fps)
+    return write_path
+
 
 
 

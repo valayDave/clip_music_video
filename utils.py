@@ -58,32 +58,43 @@ def create_image(img, i, text, gen, pre_scaled=True):
         img = np.transpose(img, (1, 2, 0))
     if not pre_scaled:
         img = scale(img, 48*4, 32*4)
+    
     img = np.array(img)
-    with tempfile.NamedTemporaryFile() as image_temp:
-        imageio.imwrite(image_temp.name+".png", img)
-        image_temp.seek(0)
-        return image_temp
+    image_temp = tempfile.NamedTemporaryFile(delete=False)
+    imageio.imwrite(image_temp.name+".png", img)
+    image_temp.seek(0)
+    return image_temp
 
 nom = torchvision.transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
 
 class Pars(torch.nn.Module):
-    def __init__(self, gen='biggan'):
+    def __init__(self, gen='biggan',cuda=False):
         super(Pars, self).__init__()
         self.gen = gen
         if self.gen == 'biggan':
-            params1 = torch.zeros(32, 128).normal_(std=1).cuda()
+            params1 = torch.zeros(32, 128).normal_(std=1)
+            if cuda:
+                params1 = torch.zeros(32, 128).normal_(std=1).cuda()
+
             self.normu = torch.nn.Parameter(params1)
             params_other = torch.zeros(32, 1000).normal_(-3.9, .3)
             self.cls = torch.nn.Parameter(params_other)
-            self.thrsh_lat = torch.tensor(1).cuda()
-            self.thrsh_cls = torch.tensor(1.9).cuda()
+            self.thrsh_lat = torch.tensor(1)
+            self.thrsh_cls = torch.tensor(1.9)
+            if cuda:
+                self.thrsh_lat = torch.tensor(1).cuda()
+                self.thrsh_cls = torch.tensor(1.9).cuda()
 
         elif self.gen == 'dall-e':
-            self.normu = torch.nn.Parameter(torch.zeros(1, 8192, 64, 64).cuda())
+            self.normu = torch.nn.Parameter(torch.zeros(1, 8192, 64, 64))
+            if cuda:
+                self.normu = torch.nn.Parameter(torch.zeros(1, 8192, 64, 64).cuda())
 
         elif self.gen == 'stylegan':
             latent_shape = (1, 1, 512)
-            latents_init = torch.zeros(latent_shape).squeeze(-1).cuda()
+            latents_init = torch.zeros(latent_shape).squeeze(-1)
+            if cuda:
+                latents_init = torch.zeros(latent_shape).squeeze(-1).cuda()
             self.normu = torch.nn.Parameter(latents_init, requires_grad=True)
 
     def forward(self):
@@ -130,7 +141,7 @@ def ascend_txt(model, lats, sideX, sideY, perceptor, percep, gen, tokenizedtxt):
         img = model(zs)
         img = torch.nn.functional.upsample_bilinear(img, (224, 224))
 
-        img_logits, _text_logits = perceptor(img, tokenizedtxt.cuda())
+        img_logits, _text_logits = perceptor(img, tokenizedtxt)
 
         return 1/img_logits * 100, img, zs
     

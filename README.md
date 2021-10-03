@@ -3,9 +3,15 @@ Code for making music videos using CLIP
 
 ## How to run (using biggan)
 ```console
- python3 main.py --epochs 400 --textfile yannic_lyrics.txt --audiofile Weasle_sample_audio.mp3
- ```
+ python main.py --epochs 400 --textfile yannic_lyrics.txt --audiofile Weasle_sample_audio.mp3
+```
  use less epochs to trade off quality and speed.
+
+## How to run (Using Metaflow)
+```console
+python video-creator-flow.py --epochs 400 --textfile yannic_lyrics.txt --audiofile Weasle_sample_audio.mp3 --num-gpus 1 --generator dall-e
+```
+
 
 ## References
 
@@ -56,7 +62,7 @@ file /etc/ImageMagick/policy.xml here,
 changed <policy domain="path" rights="none" pattern="@*" />
 to <policy domain="path" rights="read,write" pattern="@*" />
 ```
-
+The [Dockerfile](./Dockerfile) does it natively. 
 # BigGan_Dall-E_Clip with moviepy
 Please create a folder 'output' for the generated images to be saved in.
 Please install clip and dall-e
