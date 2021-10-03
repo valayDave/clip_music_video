@@ -3,11 +3,7 @@ ADD requirements.txt /requirements.txt
 RUN pip install DALL-E
 RUN pip install git+https://github.com/openai/CLIP.git 
 USER root
-ENV DEBIAN_FRONTEND="noninteractive" TZ="Europe/London"
-RUN apt-get install -y tzdata
-RUN DEBIAN_FRONTEND="noninteractive" apt-get update && apt-get install -y \
-    imagemagick libmagickwand-dev --no-install-recommends \
-    && pecl install imagick \
-    && docker-php-ext-enable imagick
+RUN apt-get update && \
+    DEBIAN_FRONTEND="noninteractive" TZ="Europe/London" apt-get install imagemagick -y
 RUN pip install -r /requirements.txt
 CMD ["python3"]
