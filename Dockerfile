@@ -3,6 +3,8 @@ ADD requirements.txt /requirements.txt
 RUN pip install DALL-E
 RUN pip install git+https://github.com/openai/CLIP.git 
 USER root
+ENV DEBIAN_FRONTEND="noninteractive" TZ="Europe/London"
+RUN apt-get install -y tzdata
 RUN DEBIAN_FRONTEND="noninteractive" apt-get update && apt-get install -y \
     imagemagick libmagickwand-dev --no-install-recommends \
     && pecl install imagick \
