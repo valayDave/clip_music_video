@@ -6,4 +6,6 @@ USER root
 RUN apt-get update && \
     DEBIAN_FRONTEND="noninteractive" TZ="Europe/London" apt-get install imagemagick -y
 RUN pip install -r /requirements.txt
+ADD edit_imagemagik.py /edit_imagemagik.py
+RUN python edit_imagemagik.py
 CMD ["python3"]
