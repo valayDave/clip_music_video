@@ -73,11 +73,12 @@ class Pars(torch.nn.Module):
         self.gen = gen
         if self.gen == 'biggan':
             params1 = torch.zeros(32, 128).normal_(std=1)
+            params_other = torch.zeros(32, 1000).normal_(-3.9, .3)
             if cuda:
                 params1 = torch.zeros(32, 128).normal_(std=1).cuda()
+                params_other = torch.zeros(32, 1000).normal_(-3.9, .3).cuda()
 
             self.normu = torch.nn.Parameter(params1)
-            params_other = torch.zeros(32, 1000).normal_(-3.9, .3)
             self.cls = torch.nn.Parameter(params_other)
             self.thrsh_lat = torch.tensor(1)
             self.thrsh_cls = torch.tensor(1.9)

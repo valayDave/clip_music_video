@@ -336,7 +336,8 @@ class VideoGenerationPipeline(FlowSpec):
 
     @step
     def end(self):
-        pass
+        self.final_video_url = self.final_video_url
+        self.model = self.model
 
 
 if __name__ == "__main__":
