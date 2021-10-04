@@ -29,14 +29,15 @@ def createvid(description, image_temp_list, fps=24, duration=0.1):
     final = me.CompositeVideoClip(comp_list).set_duration(concat_clip.duration)
 
     video_tempfile = tempfile.NamedTemporaryFile(delete=False)
-    final.write_videofile(video_tempfile.name+".mp4", fps=fps)
+    write_file_name = video_tempfile.name+".mp4"
+    final.write_videofile(write_file_name, fps=fps)
     video_tempfile.seek(0)
 
     for clip in clips:
         clip.close()
     for clip in comp_list:
         clip.close()
-    return video_tempfile
+    return video_tempfile,write_file_name
 
 def concatvids(descriptions, \
             video_temp_list, \
@@ -54,7 +55,7 @@ def concatvids(descriptions, \
     #     # elif desc == "start song":
     #     #     desc = " "
     #     # compvid_list.append(blackbg)
-        vid = me.VideoFileClip(f'{vid.name}.mp4')#.set_position(('center', 'center'))
+        vid = me.VideoFileClip(f'{vid.name}')#.set_position(('center', 'center'))
         # compvid_list.append(vid)
 
         # if len(desc) > 35:

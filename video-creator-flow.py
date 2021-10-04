@@ -1,3 +1,4 @@
+from botocore.validate import validate_parameters
 from metaflow import FlowSpec,step,batch,Parameter,IncludeFile
 import click
 import math
@@ -94,38 +95,157 @@ class VideoGenerationPipeline(FlowSpec):
         print("Setting Up Model : ",self.generator)
         model,perceptor = self.setup_models()
         templist, model = self.train_video_gen(model,perceptor)
-        from metaflow import S3
-        with S3(run=self) as s3:
-            s3_resp = s3.put_files([
-                (f.name.split('/')[-1],f.name) for f in templist
-            ])
-            self.latent_vector_files = [r[1] for r in s3_resp]
+        
+        self._save_latent_vectors(templist)
 
         self.model = model.cpu().state_dict() 
         self.perceptor = perceptor.cpu().state_dict()
         self.next(self.inference)
     
-    @batch(cpu=4,memory=24000,gpu=1,image='valayob/musicvideobuilder:0.4')
     @step
     def inference(self):
+        self.lyric_tuples = [(idx1, pt) for idx1, pt in enumerate(self.descs)]
+        print(f"Starting : {len(self.lyric_tuples)} Jobs")
+        self.next(self.build_video_chunk,foreach='lyric_tuples')
+    
+    @batch(cpu=4,memory=12000,image='valayob/musicvideobuilder:0.4')
+    @step
+    def build_video_chunk(self):
         """
-        Run Inference on the latent vectors stored. 
+        Run Inference on the latent vectors individually stored. 
         """
-        from metaflow import S3
+        idx,lyric_val = self.input
+        self.lyric_idx = idx
         print("Training Complete : Creating Video file")
+        templist = self._get_latent_vectors()
+        model,_ = self.setup_models()
+        model.load_state_dict(self.model)
+        video_temp_file,write_file_name = self.interpolate_lyric_video(templist,lyric_val,self.lyric_idx, model)
+        if video_temp_file is not None:
+            self.video_url = self.save_video(write_file_name)
+        else:
+            self.video_url = video_temp_file 
+
+        self.next(self.video_from_lyrics)
+    
+    def _save_latent_vectors(self,latent_vector_files):
+        from metaflow import S3
+        self.latent_vector_files = []
+        with S3(run=self) as s3:
+            # Order is important so we serially iterate over the files. 
+            for f in latent_vector_files:
+                resp = s3.put_files([
+                    (f.name.split('/')[-1],f.name)
+                ])
+                self.latent_vector_files.append(
+                    resp[0][1]
+                )
+
+    def _get_latent_vectors(self):
+        from metaflow import S3
         with S3() as s3:
             templist =  []
-            for ret_obj in s3.get_many(self.latent_vector_files):
-                templist.append(self._to_file(ret_obj.blob,as_name=True) )
-            model,_ = self.setup_models()
-            if self.num_gpus > 0 :
-                model = model.cuda()
-            model.load_state_dict(self.model)
-            audio_file_path = self._to_file(self.audiofile)
-            path_to_video = self.interpolate(templist, self.descs, model, audio_file_path)
-            self.video_url = self.save_video(path_to_video)
+            for f in self.latent_vector_files:
+                templist.append(self._to_file(s3.get(f).blob,as_name=False))
+        return templist
+
+    # @batch(cpu=4,memory=12000,image='valayob/musicvideobuilder:0.4')
+    @step
+    def video_from_lyrics(self,inputs):
+        from metaflow import S3
+        import create_video
+        videos = []
+        self.descs = inputs.build_video_chunk.descs
+        for input in inputs:
+            if input.video_url is not None:
+                videos.append((input.lyric_idx,input.video_url))
+        videos.sort(key=lambda x:x[0])
+        with S3() as s3:
+            write_video = []
+            for lyric_idx,video_url in videos:
+                s3_resp = s3.get(video_url)
+                video_file = self._to_file(s3_resp.blob,as_name=False)
+                write_video.append(video_file)
+        audio_file_path = self._to_file(self.audiofile)
+        video_path = create_video.concatvids(self.descs,\
+                                write_video,\
+                                audio_file_path,\
+                                lyrics=self.use_lyrics,\
+                                write_to_path='./')
+        
+        self.final_video_url = self.save_video(video_path)
         self.next(self.end)
     
+    def interpolate_lyric_video(self,templist,lyric,lyric_idx,model):
+        import torch
+        from utils import create_image
+        import create_video
+        from dall_e import  unmap_pixels
+        video_temp_list = []
+        num_frames = 0
+        pt = lyric
+        # interpole elements between each image
+        print("Interpolating Between Images")
+        map_location=torch.device('cpu')
+        if torch.cuda.is_available():
+            model = model.cuda()
+            map_location=torch.device('cuda')
+        # get the next index of the descs list, 
+        # if it z1_idx is out of range, break the loop
+        z1_idx = lyric_idx + 1
+        if z1_idx >= len(self.descs):
+            return None,None
+        current_lyric = pt[1]
+
+        # get the interval betwee 2 lines/elements in seconds `ttime`
+        d1 = pt[0]
+        d2 = self.descs[z1_idx][0]
+        ttime = d2 - d1
+
+        # Load zs from file. 
+        zs = torch.load(templist[lyric_idx],map_location=map_location)
+        
+        # compute for the number of elements to be insert between the 2 elements
+        N = round(ttime * self.interpolation)
+        # the codes below determine if the output is list (for biggan)
+        # if not insert it into a list 
+        print("Generating Images :",N)
+        if not isinstance(zs, list):
+            z0 = [zs]
+            z1 = [torch.load(templist[z1_idx],map_location=map_location)]
+        else:
+            z0 = zs
+            z1 = torch.load(templist[z1_idx],map_location=map_location)
+        
+        # loop over the range of elements and generate the images
+        image_temp_list = []
+        for t in range(N):
+            num_frames +=1
+            if self.max_frames is not None:
+                if num_frames > self.max_frames:
+                    break
+            azs = []
+            for r in zip(z0, z1):
+                z_diff = r[1] - r[0] 
+                inter_zs = r[0] + sigmoid(t / (N-1)) * z_diff
+                azs.append(inter_zs)
+
+            # Generate image
+            with torch.no_grad():
+                if self.generator == 'biggan':
+                    img = model(azs[0], azs[1], 1).cpu().numpy()
+                    img = img[0]
+                elif self.generator == 'dall-e':
+                    img = unmap_pixels(torch.sigmoid(model(azs[0])[:, :3]).cpu().float()).numpy()
+                    img = img[0]
+                elif self.generator == 'stylegan':
+                    img = model(azs[0])
+                image_temp = create_image(img, t, current_lyric, self.generator)
+            image_temp_list.append(image_temp)
+        
+        video_temp,write_file_name = create_video.createvid(f'{current_lyric}', image_temp_list, duration=ttime / N)
+        return video_temp, write_file_name
+        
     
     def save_video(self,video_path):
         from metaflow import S3
@@ -135,83 +255,6 @@ class VideoGenerationPipeline(FlowSpec):
             ])
             s3_url = saved[0][1]
             return s3_url
-
-    def interpolate(self,templist, descs, model, audiofile):
-        import torch
-        from utils import create_image
-        import create_video
-        from dall_e import  unmap_pixels
-        video_temp_list = []
-        num_frames = 0
-        # interpole elements between each image
-        print("Interpolating Between Images")
-        for idx1, pt in enumerate(descs):
-            # get the next index of the descs list, 
-            # if it z1_idx is out of range, break the loop
-            z1_idx = idx1 + 1
-            if z1_idx >= len(descs):
-                break
-
-            current_lyric = pt[1]
-
-            # get the interval betwee 2 lines/elements in seconds `ttime`
-            d1 = pt[0]
-            d2 = descs[z1_idx][0]
-            ttime = d2 - d1
-
-            # if it is the very first index, load the first pt temp file
-            # if not assign the previous pt file (z1) to zs variable
-            if idx1 == 0:
-                zs = torch.load(templist[idx1])
-            else:
-                zs = z1
-            
-            # compute for the number of elements to be insert between the 2 elements
-            N = round(ttime * self.interpolation)
-            # the codes below determine if the output is list (for biggan)
-            # if not insert it into a list 
-            if not isinstance(zs, list):
-                z0 = [zs]
-                z1 = [torch.load(templist[z1_idx])]
-            else:
-                z0 = zs
-                z1 = torch.load(templist[z1_idx])
-            
-            # loop over the range of elements and generate the images
-            image_temp_list = []
-            for t in range(N):
-                num_frames +=1
-                if self.max_frames is not None:
-                    if num_frames > self.max_frames:
-                        break
-                azs = []
-                for r in zip(z0, z1):
-                    z_diff = r[1] - r[0] 
-                    inter_zs = r[0] + sigmoid(t / (N-1)) * z_diff
-                    azs.append(inter_zs)
-
-                # Generate image
-                with torch.no_grad():
-                    if self.generator == 'biggan':
-                        img = model(azs[0], azs[1], 1).cpu().numpy()
-                        img = img[0]
-                    elif self.generator == 'dall-e':
-                        img = unmap_pixels(torch.sigmoid(model(azs[0])[:, :3]).cpu().float()).numpy()
-                        img = img[0]
-                    elif self.generator == 'stylegan':
-                        img = model(azs[0])
-                    image_temp = create_image(img, t, current_lyric, self.generator)
-                image_temp_list.append(image_temp)
-            if len(image_temp_list) > 0:
-                video_temp = create_video.createvid(f'{current_lyric}', image_temp_list, duration=ttime / N)
-                video_temp_list.append(video_temp)
-            if self.max_frames is not None:
-                if num_frames > self.max_frames:
-                    break
-            
-        # Finally create the final output and save to output folder
-        return create_video.concatvids(descs, video_temp_list, audiofile, lyrics=self.use_lyrics,write_to_path='./')
-        
 
     def train_video_gen(self,model,perceptor):
         from tqdm import tqdm
