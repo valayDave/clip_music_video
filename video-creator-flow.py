@@ -1,5 +1,5 @@
 from botocore.validate import validate_parameters
-from metaflow import FlowSpec,step,batch,Parameter,IncludeFile
+from metaflow import FlowSpec,step,batch,Parameter,IncludeFile,retry,resources
 import click
 import math
 
@@ -58,13 +58,7 @@ class VideoGenerationPipeline(FlowSpec):
         help="Path to DALL-E's decoder"
     )
 
-    max_frames = Parameter(
-        'max-frames', 
-        default = None,
-        type    = int, 
-        help    ='Maximum Number of frames ')
-
-    # @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.3')
+    @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
     @step
     def start(self):
         print(type(self.audiofile))
@@ -102,13 +96,15 @@ class VideoGenerationPipeline(FlowSpec):
         self.perceptor = perceptor.cpu().state_dict()
         self.next(self.inference)
     
+    # @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
     @step
     def inference(self):
         self.lyric_tuples = [(idx1, pt) for idx1, pt in enumerate(self.descs)]
         print(f"Starting : {len(self.lyric_tuples)} Jobs")
         self.next(self.build_video_chunk,foreach='lyric_tuples')
     
-    @batch(cpu=4,memory=12000,image='valayob/musicvideobuilder:0.4')
+    @retry(times=4)
+    @batch(cpu=4,memory=7500,image='valayob/musicvideobuilder:0.4')
     @step
     def build_video_chunk(self):
         """
@@ -116,11 +112,11 @@ class VideoGenerationPipeline(FlowSpec):
         """
         idx,lyric_val = self.input
         self.lyric_idx = idx
-        print("Training Complete : Creating Video file")
-        templist = self._get_latent_vectors()
+        print("Creating Video Chunk file")
+        print("Loaded All Latent Vectors")
         model,_ = self.setup_models()
         model.load_state_dict(self.model)
-        video_temp_file,write_file_name = self.interpolate_lyric_video(templist,lyric_val,self.lyric_idx, model)
+        video_temp_file,write_file_name = self.interpolate_lyric_video(lyric_val,self.lyric_idx, model)
         if video_temp_file is not None:
             self.video_url = self.save_video(write_file_name)
         else:
@@ -141,15 +137,14 @@ class VideoGenerationPipeline(FlowSpec):
                     resp[0][1]
                 )
 
-    def _get_latent_vectors(self):
+    def _get_latent_vector(self,vec_idx):
+        if vec_idx >= len(self.latent_vector_files):
+            return None
         from metaflow import S3
         with S3() as s3:
-            templist =  []
-            for f in self.latent_vector_files:
-                templist.append(self._to_file(s3.get(f).blob,as_name=False))
-        return templist
+            return self._to_file(s3.get(self.latent_vector_files[vec_idx]).blob,as_name=False)
 
-    # @batch(cpu=4,memory=12000,image='valayob/musicvideobuilder:0.4')
+    @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
     @step
     def video_from_lyrics(self,inputs):
         from metaflow import S3
@@ -176,7 +171,7 @@ class VideoGenerationPipeline(FlowSpec):
         self.final_video_url = self.save_video(video_path)
         self.next(self.end)
     
-    def interpolate_lyric_video(self,templist,lyric,lyric_idx,model):
+    def interpolate_lyric_video(self,lyric,lyric_idx,model):
         import torch
         from utils import create_image
         import create_video
@@ -203,27 +198,26 @@ class VideoGenerationPipeline(FlowSpec):
         ttime = d2 - d1
 
         # Load zs from file. 
-        zs = torch.load(templist[lyric_idx],map_location=map_location)
+        zs = torch.load(self._get_latent_vector(lyric_idx),map_location=map_location)
         
         # compute for the number of elements to be insert between the 2 elements
         N = round(ttime * self.interpolation)
         # the codes below determine if the output is list (for biggan)
         # if not insert it into a list 
         print("Generating Images :",N)
+        if N == 0:
+            return None,None
         if not isinstance(zs, list):
             z0 = [zs]
-            z1 = [torch.load(templist[z1_idx],map_location=map_location)]
+            z1 = [torch.load(self._get_latent_vector(z1_idx),map_location=map_location)]
         else:
             z0 = zs
-            z1 = torch.load(templist[z1_idx],map_location=map_location)
+            z1 = torch.load(self._get_latent_vector(z1_idx),map_location=map_location)
         
         # loop over the range of elements and generate the images
         image_temp_list = []
         for t in range(N):
             num_frames +=1
-            if self.max_frames is not None:
-                if num_frames > self.max_frames:
-                    break
             azs = []
             for r in zip(z0, z1):
                 z_diff = r[1] - r[0] 
@@ -337,7 +331,7 @@ class VideoGenerationPipeline(FlowSpec):
     @step
     def end(self):
         self.final_video_url = self.final_video_url
-        self.model = self.model
+        # self.model = self.model
 
 
 if __name__ == "__main__":
