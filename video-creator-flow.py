@@ -124,26 +124,6 @@ class VideoGenerationPipeline(FlowSpec):
 
         self.next(self.video_from_lyrics)
     
-    def _save_latent_vectors(self,latent_vector_files):
-        from metaflow import S3
-        self.latent_vector_files = []
-        with S3(run=self) as s3:
-            # Order is important so we serially iterate over the files. 
-            for f in latent_vector_files:
-                resp = s3.put_files([
-                    (f.name.split('/')[-1],f.name)
-                ])
-                self.latent_vector_files.append(
-                    resp[0][1]
-                )
-
-    def _get_latent_vector(self,vec_idx):
-        if vec_idx >= len(self.latent_vector_files):
-            return None
-        from metaflow import S3
-        with S3() as s3:
-            return self._to_file(s3.get(self.latent_vector_files[vec_idx]).blob,as_name=False)
-
     @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
     @step
     def video_from_lyrics(self,inputs):
@@ -171,6 +151,10 @@ class VideoGenerationPipeline(FlowSpec):
         self.final_video_url = self.save_video(video_path)
         self.next(self.end)
     
+    @step
+    def end(self):
+        print("Done Computation")
+
     def interpolate_lyric_video(self,lyric,lyric_idx,model):
         import torch
         from utils import create_image
@@ -242,6 +226,27 @@ class VideoGenerationPipeline(FlowSpec):
         return video_temp, write_file_name
         
     
+    def _save_latent_vectors(self,latent_vector_files):
+        from metaflow import S3
+        self.latent_vector_files = []
+        with S3(run=self) as s3:
+            # Order is important so we serially iterate over the files. 
+            for f in latent_vector_files:
+                resp = s3.put_files([
+                    (f.name.split('/')[-1],f.name)
+                ])
+                self.latent_vector_files.append(
+                    resp[0][1]
+                )
+
+    def _get_latent_vector(self,vec_idx):
+        if vec_idx >= len(self.latent_vector_files):
+            return None
+        from metaflow import S3
+        with S3() as s3:
+            return self._to_file(s3.get(self.latent_vector_files[vec_idx]).blob,as_name=False)
+
+
     def save_video(self,video_path):
         from metaflow import S3
         with S3(run=self) as s3:
@@ -328,10 +333,6 @@ class VideoGenerationPipeline(FlowSpec):
             model   = g_synthesis.eval()
 
         return model,perceptor
-
-    @step
-    def end(self):
-        print("Done Computation")
 
 
 if __name__ == "__main__":
