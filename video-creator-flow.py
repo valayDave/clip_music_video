@@ -236,7 +236,8 @@ class VideoGenerationPipeline(FlowSpec):
                     img = model(azs[0])
                 image_temp = create_image(img, t, current_lyric, self.generator)
             image_temp_list.append(image_temp)
-        
+        if len(image_temp_list) == 0:
+            return None,None
         video_temp,write_file_name = create_video.createvid(f'{current_lyric}', image_temp_list, duration=ttime / N)
         return video_temp, write_file_name
         
@@ -263,7 +264,7 @@ class VideoGenerationPipeline(FlowSpec):
         # list of temporary PTFiles 
         templist = []
         print("Running the Training Loop")
-        if self.num_gpus > 0:
+        if torch.cuda.is_available():
             model = model.cuda()
         # Loop over the description list
         with tqdm_logging_redirect():
@@ -330,8 +331,7 @@ class VideoGenerationPipeline(FlowSpec):
 
     @step
     def end(self):
-        self.final_video_url = self.final_video_url
-        # self.model = self.model
+        print("Done Computation")
 
 
 if __name__ == "__main__":
