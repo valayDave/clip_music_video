@@ -133,3 +133,4 @@ dmypy.json
 *.pkl
 *.mp4
 metaflow.*
+metaflow_client_cache/
