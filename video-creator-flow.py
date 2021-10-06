@@ -66,20 +66,7 @@ class VideoGenerationPipeline(FlowSpec):
         text_file_path = self._to_file(self.textfile.encode())
         self.descs = init_textfile(text_file_path)
         self.next(self.train)
-    
-    def _to_file(self,file_bytes,as_name=True):
-        """
-        Returns path for a file. 
-        """
-        import tempfile
-        latent_temp = tempfile.NamedTemporaryFile(delete=False)
-        latent_temp.write(file_bytes)
-        latent_temp.seek(0)
-        if not as_name:
-            return latent_temp
-        return latent_temp.name
-        
-
+   
     @batch(cpu=4,memory=24000,gpu=1,image='valayob/musicvideobuilder:0.4')
     @step
     def train(self):
@@ -96,7 +83,6 @@ class VideoGenerationPipeline(FlowSpec):
         self.perceptor = perceptor.cpu().state_dict()
         self.next(self.inference)
     
-    # @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
     @step
     def inference(self):
         self.lyric_tuples = [(idx1, pt) for idx1, pt in enumerate(self.descs)]
@@ -154,6 +140,19 @@ class VideoGenerationPipeline(FlowSpec):
     @step
     def end(self):
         print("Done Computation")
+   
+    def _to_file(self,file_bytes,as_name=True):
+        """
+        Returns path for a file. 
+        """
+        import tempfile
+        latent_temp = tempfile.NamedTemporaryFile(delete=False)
+        latent_temp.write(file_bytes)
+        latent_temp.seek(0)
+        if not as_name:
+            return latent_temp
+        return latent_temp.name
+        
 
     def interpolate_lyric_video(self,lyric,lyric_idx,model):
         import torch
