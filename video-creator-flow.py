@@ -15,12 +15,6 @@ class VideoGenerationPipeline(FlowSpec):
 
     batch_size = Parameter('batch-size',default = 64,type=int,help='Batch size to use for training the model.')
 
-    num_gpus = Parameter(
-        'num-gpus',
-        envvar="NUM_GPUS",\
-        default=0,type=int,help='Number of GPUs to use when training the model.'
-    )
-    
     epochs = Parameter('epochs', 
                     default = 100, 
                     type    = int, 
@@ -30,10 +24,6 @@ class VideoGenerationPipeline(FlowSpec):
                         default = 'biggan', 
                         type = click.Choice(['biggan', 'dall-e', 'stylegan']),
                         help    = 'Choose what type of generator you would like to use BigGan or Dall-E')
-
-    use_lyrics = Parameter('lyrics', 
-                is_flag=True,
-                help    ='Include lyrics')
 
     interpolation = Parameter('interpolation', 
                         default = 10,
@@ -54,17 +44,18 @@ class VideoGenerationPipeline(FlowSpec):
     dalle_decoder = IncludeFile(
         'decoder-path',
         is_text=False,
+        envvar="DALLE_PATH",\
         default="decoder.pkl",
         help="Path to DALL-E's decoder"
     )
 
-    @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
+    # @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
     @step
     def start(self):
         print(type(self.audiofile))
         from utils import init_textfile        
-        text_file_path = self._to_file(self.textfile.encode())
-        self.descs = init_textfile(text_file_path)
+        text_file = self._to_file(self.textfile.encode(),as_name=False)
+        self.descs = init_textfile(text_file.name)
         self.next(self.train)
    
     @batch(cpu=4,memory=24000,gpu=1,image='valayob/musicvideobuilder:0.4')
@@ -100,7 +91,7 @@ class VideoGenerationPipeline(FlowSpec):
         self.lyric_idx = idx
         print("Creating Video Chunk file")
         print("Loaded All Latent Vectors")
-        model,_ = self.setup_models()
+        model,_ = self.setup_models(with_perceptor=False)
         model.load_state_dict(self.model)
         video_temp_file,write_file_name = self.interpolate_lyric_video(lyric_val,self.lyric_idx, model)
         if video_temp_file is not None:
@@ -127,11 +118,10 @@ class VideoGenerationPipeline(FlowSpec):
                 s3_resp = s3.get(video_url)
                 video_file = self._to_file(s3_resp.blob,as_name=False)
                 write_video.append(video_file)
-        audio_file_path = self._to_file(self.audiofile)
+        audio_file = self._to_file(self.audiofile,as_name=False)
         video_path = create_video.concatvids(self.descs,\
                                 write_video,\
-                                audio_file_path,\
-                                lyrics=self.use_lyrics,\
+                                audio_file.name,\
                                 write_to_path='./')
         
         self.final_video_url = self.save_video(video_path)
@@ -146,7 +136,7 @@ class VideoGenerationPipeline(FlowSpec):
         Returns path for a file. 
         """
         import tempfile
-        latent_temp = tempfile.NamedTemporaryFile(delete=False)
+        latent_temp = tempfile.NamedTemporaryFile(delete=True)
         latent_temp.write(file_bytes)
         latent_temp.seek(0)
         if not as_name:
@@ -277,7 +267,7 @@ class VideoGenerationPipeline(FlowSpec):
                 timestamp = d[0]
                 line = d[1]
                 # stamps_descs_list.append((timestamp, line))
-                lats = Pars(gen=self.generator,cuda=self.num_gpus > 0)
+                lats = Pars(gen=self.generator,cuda=torch.cuda.is_available())
 
                 # Init Generator's latents
                 if self.generator == 'biggan':
@@ -295,7 +285,7 @@ class VideoGenerationPipeline(FlowSpec):
 
                 # tokenize the current description with clip and encode the text
                 txt = clip.tokenize(line)
-                if self.num_gpus > 0:
+                if torch.cuda.is_available():
                     txt = txt.cuda()
                 percep = perceptor.encode_text(txt).detach().clone()
 
@@ -311,24 +301,26 @@ class VideoGenerationPipeline(FlowSpec):
                 templist.append(latent_temp)
         return templist, model 
     
-    def setup_models(self):
+    def setup_models(self,with_perceptor=True):
         import clip 
-        from stylegan       import g_synthesis
-        from dall_e         import  load_model
-        from biggan         import BigGAN
-        perceptor, preprocess   = clip.load('ViT-B/32')
-        perceptor               = perceptor.eval()
+        if with_perceptor:
+            perceptor, preprocess   = clip.load('ViT-B/32')
+            perceptor               = perceptor.eval()
+        else:
+            perceptor = None
 
-        
         # Load the model
         if self.generator == 'biggan':
+            from biggan         import BigGAN
             model   = BigGAN.from_pretrained('biggan-deep-512')
             model   = model.eval()
             
         elif self.generator == 'dall-e':
-            dalle_decoder_path = self._to_file(self.dalle_decoder)
-            model   = load_model(dalle_decoder_path, 'cpu')
+            from dall_e         import  load_model
+            dalle_decoder_file = self._to_file(self.dalle_decoder,as_name=False)
+            model   = load_model(dalle_decoder_file.name, 'cpu')
         elif self.generator == 'stylegan':
+            from stylegan       import g_synthesis
             model   = g_synthesis.eval()
 
         return model,perceptor
