@@ -13,8 +13,6 @@ def sigmoid(x):
 
 class VideoGenerationPipeline(FlowSpec):
 
-    batch_size = Parameter('batch-size',default = 64,type=int,help='Batch size to use for training the model.')
-
     epochs = Parameter('epochs', 
                     default = 100, 
                     type    = int, 
