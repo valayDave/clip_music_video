@@ -49,12 +49,12 @@ class VideoGenerationPipeline(FlowSpec):
         help="Path to DALL-E's decoder"
     )
 
-    # @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
+    @batch(cpu=4,memory=8000,image='valayob/musicvideobuilder:0.4')
     @step
     def start(self):
         print(type(self.audiofile))
         from utils import init_textfile        
-        text_file = self._to_file(self.textfile.encode(),as_name=False)
+        text_file = self._to_file(self.textfile.encode())
         self.descs = init_textfile(text_file.name)
         self.next(self.train)
    
@@ -64,11 +64,12 @@ class VideoGenerationPipeline(FlowSpec):
         """
         Setup and Train the Model. Store rest in S3. 
         """
+        import tempfile
         print("Setting Up Model : ",self.generator)
         model,perceptor = self.setup_models()
-        templist, model = self.train_video_gen(model,perceptor)
-        
-        self._save_latent_vectors(templist)
+        with tempfile.TemporaryDirectory() as model_save_dir:
+            templist, model = self.train_video_gen(model,perceptor,model_save_dir)
+            self._save_latent_vectors(templist)
 
         self.model = model.cpu().state_dict() 
         self.perceptor = perceptor.cpu().state_dict()
@@ -106,32 +107,42 @@ class VideoGenerationPipeline(FlowSpec):
     def video_from_lyrics(self,inputs):
         from metaflow import S3
         import create_video
-        videos = []
+        import os 
+        import shutil
+        import shutil
+        import tempfile
+        videos = []        
         self.descs = inputs.build_video_chunk.descs
         for input in inputs:
             if input.video_url is not None:
                 videos.append((input.lyric_idx,input.video_url))
-        videos.sort(key=lambda x:x[0])
-        with S3() as s3:
-            write_video = []
-            for lyric_idx,video_url in videos:
-                s3_resp = s3.get(video_url)
-                video_file = self._to_file(s3_resp.blob,as_name=False)
-                write_video.append(video_file)
-        audio_file = self._to_file(self.audiofile,as_name=False)
-        video_path = create_video.concatvids(self.descs,\
-                                write_video,\
-                                audio_file.name,\
-                                write_to_path='./')
         
-        self.final_video_url = self.save_video(video_path)
+        videos.sort(key=lambda x:x[0])
+        # Creating temp dir because we cannot have limited file descriptors. 
+        # Moving Files from s3 to tempdir and then concating those in the video 
+        with tempfile.TemporaryDirectory() as tmpdirname:
+            with S3() as s3:
+                write_video = []
+                for lyric_idx,video_url in videos:
+                    s3_resp = s3.get(video_url)
+                    video_file_name = os.path.join(tmpdirname,s3_resp.path.split('/')[-1])
+                    shutil.move(s3_resp.path,video_file_name)
+                    write_video.append(video_file_name)
+
+            audio_file = self._to_file(self.audiofile)
+            video_path = create_video.concatvids(self.descs,\
+                                    write_video,\
+                                    audio_file.name,\
+                                    write_to_path='./')
+            
+            self.final_video_url = self.save_video(video_path)
         self.next(self.end)
     
     @step
     def end(self):
         print("Done Computation")
    
-    def _to_file(self,file_bytes,as_name=True):
+    def _to_file(self,file_bytes):
         """
         Returns path for a file. 
         """
@@ -139,9 +150,8 @@ class VideoGenerationPipeline(FlowSpec):
         latent_temp = tempfile.NamedTemporaryFile(delete=True)
         latent_temp.write(file_bytes)
         latent_temp.seek(0)
-        if not as_name:
-            return latent_temp
-        return latent_temp.name
+        return latent_temp
+        
         
 
     def interpolate_lyric_video(self,lyric,lyric_idx,model):
@@ -222,7 +232,7 @@ class VideoGenerationPipeline(FlowSpec):
             # Order is important so we serially iterate over the files. 
             for f in latent_vector_files:
                 resp = s3.put_files([
-                    (f.name.split('/')[-1],f.name)
+                    (f.split('/')[-1],f)
                 ])
                 self.latent_vector_files.append(
                     resp[0][1]
@@ -233,7 +243,7 @@ class VideoGenerationPipeline(FlowSpec):
             return None
         from metaflow import S3
         with S3() as s3:
-            return self._to_file(s3.get(self.latent_vector_files[vec_idx]).blob,as_name=False)
+            return self._to_file(s3.get(self.latent_vector_files[vec_idx]).blob)
 
 
     def save_video(self,video_path):
@@ -245,13 +255,18 @@ class VideoGenerationPipeline(FlowSpec):
             s3_url = saved[0][1]
             return s3_url
 
-    def train_video_gen(self,model,perceptor):
+    def train_video_gen(self,model,perceptor,save_directory):
         from tqdm import tqdm
         from tqdm.contrib.logging import tqdm_logging_redirect
         import torch
         import clip
         import tempfile
         from utils import train, Pars, create_image, create_outputfolder, init_textfile
+        import uuid
+        import os 
+
+        def unique_file_name():
+            return str(uuid.uuid4())
         # Read the textfile 
         
         # descs - list to append the Description and Timestamps
@@ -292,13 +307,11 @@ class VideoGenerationPipeline(FlowSpec):
                 # Training Loop
                 for i in range(self.epochs):
                     zs = train(i, model, lats, sideX, sideY, perceptor, percep, optimizer, line, txt, epochs=self.epochs, gen=self.generator)
-
-                # save each line's last latent to a torch file temporarily
-                latent_temp = tempfile.NamedTemporaryFile()
-                torch.save(zs, latent_temp) #f'./output/pt_folder/{line}.pt')
-                latent_temp.seek(0)
-                #append it to templist so it can be accessed later
-                templist.append(latent_temp)
+                # save each line's last latent to a torch file in a temporary directory
+                file_path = os.path.join(save_directory,unique_file_name())
+                torch.save(zs, file_path) 
+                # append it to templist so it can be accessed later
+                templist.append(file_path)
         return templist, model 
     
     def setup_models(self,with_perceptor=True):
@@ -317,7 +330,7 @@ class VideoGenerationPipeline(FlowSpec):
             
         elif self.generator == 'dall-e':
             from dall_e         import  load_model
-            dalle_decoder_file = self._to_file(self.dalle_decoder,as_name=False)
+            dalle_decoder_file = self._to_file(self.dalle_decoder)
             model   = load_model(dalle_decoder_file.name, 'cpu')
         elif self.generator == 'stylegan':
             from stylegan       import g_synthesis

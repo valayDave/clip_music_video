@@ -40,45 +40,17 @@ def createvid(description, image_temp_list, fps=24, duration=0.1):
     return video_tempfile,write_file_name
 
 def concatvids(descriptions, \
-            video_temp_list, \
+            video_temp_list_paths, \
             audiofilepath, \
             fps=24, \
             lyrics=True,\
             write_to_path=None):
     clips = []
 
-    for idx, (desc, vid) in enumerate(zip(descriptions, video_temp_list)):
-    #     # compvid_list = []
-    #     # desc = desc[1]
+    for idx, (desc, vid) in enumerate(zip(descriptions, video_temp_list_paths)):
         if desc == descriptions[-1][1]:
             break
-    #     # elif desc == "start song":
-    #     #     desc = " "
-    #     # compvid_list.append(blackbg)
-        vid = me.VideoFileClip(f'{vid.name}')#.set_position(('center', 'center'))
-        # compvid_list.append(vid)
-
-        # if len(desc) > 35:
-        #     desc = fill(desc, 35)
-        # if lyrics:
-
-        #     txtClip = me.TextClip(desc, color='white', fontsize=30, font='Amiri-regular').set_position('center')
-        #     txt_col = txtClip.on_color(size=(blackbg.w, txtClip.h + 10),
-        #               color=(0,0,0), pos=('center', 'center'), col_opacity=0.8)
-            
-        #     txt_mov = txt_col.set_position((0, blackbg.h-20-txtClip.h))
-        #     compvid_list.append(txt_mov)
-
-        # video_tempfile = tempfile.NamedTemporaryFile()
-        
-        # final = me.CompositeVideoClip(compvid_list).set_duration(vid.duration)
-        # final.write_videofile(video_tempfile.name+".mp4", fps=fps)
-        # video_tempfile.seek(0)
-        # for clip in clips:
-        #     clip.close()
-        # concat_clip.close()
-
-
+        vid = me.VideoFileClip(f'{vid}')#.set_position(('center', 'center'))
         clips.append(vid)
 
     concat_clip = me.concatenate_videoclips(clips, method="compose").set_position(('center', 'center'))
