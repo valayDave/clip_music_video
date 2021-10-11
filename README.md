@@ -9,7 +9,7 @@ Code for making music videos using CLIP
 
 ## How to run (Using Metaflow)
 ```console
-python video-creator-flow.py --epochs 400 --textfile yannic_lyrics.txt --audiofile Weasle_sample_audio.mp3 --num-gpus 1 --generator dall-e
+python video-creator-flow.py --epochs 400 --textfile yannic_lyrics.txt --audiofile Weasle_sample_audio.mp3 --generator dall-e
 ```
 
 
